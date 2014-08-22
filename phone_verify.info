@@ -1,0 +1,9 @@
+name = phone_verify
+description = Phone verification code to verify.
+package = Phone Verify
+dependencies[] = phone_send
+configure = admin/config/system/phone-verify
+
+core = 7.x
+version = 7.x-1.0-dev
+project = phone_verify

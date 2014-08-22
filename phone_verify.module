@@ -1,0 +1,193 @@
+<?php
+
+define('PHONE_VERIFY_SESSION', 'PHONE_VERIFY_SESSION');
+
+function phone_verify_menu() {
+  $menus = array();
+  $menus['admin/config/system/phone-verify'] = array(
+    'title' => t('Phone Verify Settings'),
+    'description' => t('Settings the Phone Verify'),
+    'page callback' => 'drupal_get_form',
+    'page arguments' => array('phone_verify_settings'),
+    'access arguments' => array('administer phone verify'),
+    'file' => 'phone_verify.admin.inc',
+  );
+  return $menus;
+}
+
+function phone_verify_form(&$form = array(), &$form_state = array()) {
+  $phone_verify = array(
+    'phone' => array(
+      '#title' => '手机号码',
+      '#type' => 'textfield',
+      '#attributes' => array(
+        'placeholder' => '请输入手机号码'
+      )
+    ),
+    'phone_verify_type' => array(
+      '#type' => 'hidden',
+      '#value' => 'default'
+    ),
+    'captcha' => array(
+      '#title' => '验证码',
+      '#type' => 'textfield',
+      '#default_value' => '',
+      '#attributes' => array(
+        'placeholder' => '请输入验证码'
+      )
+    ),
+    'send' => array(
+      '#type' => 'button',
+      '#value' => '发送验证码',
+      '#prefix' => '<div id="phone-verify-send">',
+      '#suffix' => '</div>',
+      '#validate' => phone_verify_validate('send'),
+      '#ajax' => array(
+        'callback' => 'phone_verify_send_submit',
+        'wrapper' => 'phone-verify-send'
+      ),
+      '#attributes' => array(
+        'class' => array('phone-verify-send')
+      ),
+    //'#limit_validation_errors' => array()
+    ),
+    'verify' => array(
+      '#type' => 'submit',
+      '#value' => '验证',
+      '#validate' => phone_verify_validate('verify'),
+      '#submit' => array('phone_verify_form_submit')
+    ),
+    '#attached' => array(
+      'js' => array(
+        drupal_get_path('module', 'phone_verify') . '/phone_verify.js',
+      )
+    )
+  );
+  if (empty($form['#phone_verify'])) {
+    $form['phone_verify'] = $phone_verify;
+  } else {
+    $form[$form['#phone_verify']]['phone_verify'] = $phone_verify;
+  }
+}
+
+function phone_verify_validate($setp = 'send') {
+  $validates = array('phone_verify_validate_phone');
+  if ($setp == 'send') {
+    $validates[] = 'phone_verify_validate_rate';
+  } elseif ('verify') {
+    $validates[] = 'phone_verify_validate_captcha';
+  }
+  return $validates;
+}
+
+function phone_verify_validate_phone(&$form, &$form_state) {
+  if (empty($form_state['values']['phone'])) {
+    form_set_error('phone', '请输入手机号码');
+  } elseif (!phone_send_verify($form_state['values']['phone'])) {
+    form_set_error('phone', '手机号码格式不正确');
+  }
+}
+
+function phone_verify_validate_rate(&$form, &$form_state) {
+  $record = phone_verify_get_record();
+  if (!empty($record) && $record['timestamp'] + variable_get('phone_verify_rate', 60) > REQUEST_TIME) {
+    form_set_error('captcha', '请不要重复发送验证码');
+  }
+}
+
+function phone_verify_validate_captcha($form, &$form_state) {
+  $checked = phone_verify_captcha($form_state['values']['phone'], $form_state['values']['captcha']);
+  if ($checked !== TRUE) {
+    form_set_error('captcha', phone_verify_captcha_error($checked));
+  } else {
+    phone_verify_used_captcha($form_state['values']['phone'], $form_state['values']['captcha']);
+  }
+}
+
+function phone_verify_send_submit(&$form, &$form_state) {
+  $send = empty($form['#phone_verify']) ? $form['phone_verify']['send'] : $form[$form['#phone_verify']]['phone_verify']['send'];
+  if (!form_get_errors()) {
+    $captcha = phone_verify_generate_captcha($form_state['values']['phone']);
+    $message = str_replace('[captcha]', $captcha, phone_verify_get_message($form_state['values']['phone_verify_type']));
+    phone_send($form_state['values']['phone'], $message);
+    drupal_set_message('发送成功，请注意查收短信');
+    $send['#attributes']['data-rate'] = variable_get('phone_verify_rate', 60);
+  }
+  return $send;
+}
+
+function phone_verify_form_submit($form, &$form_state) {
+  drupal_set_message('手机验证成功');
+}
+
+function phone_verify_get_form() {
+  $phone_verify = phone_verify_form();
+  drupal_alter('phone_verify_form', $phone_verify);
+  return $phone_verify;
+}
+
+function phone_verify_messages() {
+  $messages = module_invoke_all('phone_verify_message');
+  drupal_alter('phone_verify_message', $messages);
+  return $messages;
+}
+
+function phone_verify_phone_verify_message() {
+  $messages['default'] = variable_get('phone_verify_message', '手机注册验证码：[captcha]');
+  return $messages;
+}
+
+function phone_verify_get_message($type = 'default') {
+  $messages = phone_verify_messages();
+  if (array_key_exists($type, $messages)) {
+    $message = $messages[$type];
+  } else {
+    $message = $messages['default'];
+  }
+  return $message;
+}
+
+function phone_verify_number($number) {
+  return !empty($number) && preg_match(variable_get('phone_verify_number_pattern', '/^1[3|4|5|6|7|8]\d{9}$/'), $number);
+}
+
+function phone_verify_captcha($phone, $captcha) {
+  $record = phone_verify_get_record();
+  if (empty($record)) {
+    return 0;
+  } elseif ($record['phone'] != $phone) {
+    return 1;
+  } elseif ($record['captcha'] != $captcha) {
+    return 2;
+  } elseif ($record['timestamp'] + variable_get('phone_verify_expire', 60 * 10) < REQUEST_TIME) {
+    return 3;
+  }
+  return true;
+}
+
+function phone_verify_captcha_error($key) {
+  $errors = array(
+    0 => '您还未发送验证码，请先发送验证码',
+    1 => '您填写的手机号码跟接收验证码的手机不匹配',
+    2 => '验证码不正确，请重新输入',
+    3 => '验证码超时，请重新发送',
+  );
+  return $errors[$key];
+}
+
+function phone_verify_generate_captcha($phone) {
+  $captcha = mt_rand(10000, 99999);
+  $_SESSION['PHONE_VERIFY'] = array(
+    'phone' => $phone, 'captcha' => $captcha, 'timestamp' => REQUEST_TIME
+  );
+  return $captcha;
+}
+
+function phone_verify_used_captcha($phone, $captcha) {
+  unset($_SESSION['PHONE_VERIFY']);
+}
+
+function phone_verify_get_record() {
+  drupal_session_start();
+  return array_key_exists('PHONE_VERIFY', $_SESSION) ? $_SESSION['PHONE_VERIFY'] : FALSE;
+}
