@@ -2,6 +2,8 @@
 
 define('PHONE_VERIFY_SESSION', 'PHONE_VERIFY_SESSION');
 
+module_load_include('inc', 'phone_verify', 'phone_verify.field');
+
 function phone_verify_menu() {
   $menus = array();
   $menus['admin/config/system/phone-verify'] = array(
